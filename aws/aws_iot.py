@@ -29,7 +29,7 @@ class DeviceShadowHandler(object):
 
         client.connect()
 
-        self.shadow_handler = client.createShadowHandlerWithName('SmartBath', True)
+        self.shadow_handler = client.createShadowHandlerWithName(self.name, True)
         self.mqtt_client = client.getMQTTConnection()
 
     def delete_shadow_data(self, callback, timeout=5):
@@ -47,5 +47,11 @@ class DeviceShadowHandler(object):
     def add_mqtt_subscription(self, event, callback, qos=0):
         if self.mqtt_client:
             return self.mqtt_client.subscribe(event, qos, callback)
+        else:
+            raise Exception('No connection setup to mqtt endpoint')
+        
+    def send_mqtt_msg(self, event, data, callback, qos=0):
+        if self.mqtt_client:
+            pass
         else:
             raise Exception('No connection setup to mqtt endpoint')

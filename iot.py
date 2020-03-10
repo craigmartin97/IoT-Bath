@@ -2,7 +2,7 @@ import configparser
 import json
 import logging
 
-#import RPi.GPIO as GPIO
+import RPi.GPIO as GPIO
 import time
 
 from datetime import datetime
@@ -10,22 +10,34 @@ from datetime import datetime
 #GPIO Mode (BOARD / BCM)
 from aws.aws_iot import DeviceShadowHandler
 
-#GPIO.setmode(GPIO.BCM)
+GPIO.setmode(GPIO.BCM)
 
 #set GPIO Pins
 GPIO_TRIGGER = 22
 GPIO_ECHO = 27
+GPIO_Blue = 23
+GPIO_Red = 24
 
 #set GPIO direction (IN / OUT)
-#GPIO.setup(GPIO_TRIGGER, GPIO.OUT)
-#GPIO.setup(GPIO_ECHO, GPIO.IN)
-
-#Testing
-last_data_sent = 0
-readings = []
+GPIO.setup(GPIO_TRIGGER, GPIO.OUT)
+GPIO.setup(GPIO_ECHO, GPIO.IN)
+GPIO.setup(GPIO_Blue,GPIO.OUT)             # initialize digital pin40 as an output.
+GPIO.setup(GPIO_Red,GPIO.OUT)             # initialize digital pin40 as an output.
 
 conf = configparser.ConfigParser()
 conf.read('config.cfg')
+
+#Setup global state
+last_data_sent = 0
+readings = []
+state = {
+    'taps': {
+        'duration': 0,
+        'hot': False,
+        'cold': False,
+    },
+    'interrupted': False,
+}
 
 
 def shadow_update_callback(payload, responseStatus, token):
@@ -75,22 +87,24 @@ def setup_logging():
 
 def distance():
     # set Trigger to HIGH
-    #GPIO.output(GPIO_TRIGGER, True)
+    GPIO.output(GPIO_TRIGGER, True)
+    GPIO.output(GPIO_Blue, True)
+    GPIO.output(GPIO_Red, True)
 
     # set Trigger after 0.01ms to LOW
     time.sleep(0.00001)
-    #GPIO.output(GPIO_TRIGGER, False)
+    GPIO.output(GPIO_TRIGGER, False)
 
     StartTime = time.time()
     StopTime = time.time()
 
     # save StartTime
-    #while GPIO.input(GPIO_ECHO) == 0:
-    #    StartTime = time.time()
+    while GPIO.input(GPIO_ECHO) == 0:
+        StartTime = time.time()
 
     # save time of arrival
-    #while GPIO.input(GPIO_ECHO) == 1:
-    #    StopTime = time.time()
+    while GPIO.input(GPIO_ECHO) == 1:
+        StopTime = time.time()
 
     # time difference between start and arrival
     TimeElapsed = StopTime - StartTime
@@ -102,10 +116,10 @@ def distance():
 
 
 def send_metrics(data):
-    
     print('sending data to api: {}'.format(data))
-    bath_shadow.update_shadow_data(json.dumps(data), shadow_update_callback)
-    pass 
+    
+    # payload = {"state":{"reported":data}}
+    # bath_shadow.update_shadow_data(json.dumps(payload), shadow_update_callback)
 
 
 def check_readings(readings, last):
@@ -127,22 +141,36 @@ if __name__ == '__main__':
                                       cert_path=conf['bath-certs']['cert-path'])
     bath_shadow.connect()
     bath_shadow.delete_shadow_data(shadow_delete_callback)
-    bath_shadow.add_mqtt_subscription('my/test/receive', test_receive_callback)
+    bath_shadow.add_mqtt_subscription('BathMsg/stop', test_receive_callback)
     interrupted = False
 
     try:
-        while True:
+        delay = 1
+        
+        while not interrupted:
             readings = []
             
             for i in range(0, 4):
                 dist = distance()
                 readings.append(dist)
                 print("Measured Distance = %.1f cm" % dist)
-                time.sleep(0.1)
+                time.sleep(delay / 5)
 
             last_data_sent = check_readings(readings, last_data_sent)
+            
+            state['taps']['duration'] -= 1
+            if state['taps']['duration'] <= 0:
+                state['taps']['hot'] = False
+                state['taps']['cold'] = False
+                
+            
+            
+            
 
     # Reset by pressing CTRL + C
     except KeyboardInterrupt:
-        print("Measurement stopped by User")
-        #GPIO.cleanup()
+        pass
+    finally:
+        print("Manual stop")
+        GPIO.cleanup()
+        
