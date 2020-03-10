@@ -69,12 +69,17 @@ def shadow_delete_callback(payload, responseStatus, token):
         print("Delete request " + token + " rejected!")
 
 
-def test_receive_callback(client, userdata, message):
+def stop_callback(client, userdata, message):
     response = {"state": {"reported": {"interrupted": True}}}
-    global interrupted
-    interrupted = True
+    global state
+    state['interrupted'] = True
     bath_shadow.update_shadow_data(json.dumps(response), shadow_update_callback)
 
+def tap_state_callback(client, userdata, message):
+    # TODO: Look in the message to get how the state needs to be changed
+    global state
+    state['taps']['duration'] = 10
+    GPIO.output(GPIO_Red, True)
 
 def setup_logging():
     logger = logging.getLogger("AWSIoTPythonSDK.core")
@@ -88,8 +93,6 @@ def setup_logging():
 def distance():
     # set Trigger to HIGH
     GPIO.output(GPIO_TRIGGER, True)
-    GPIO.output(GPIO_Blue, True)
-    GPIO.output(GPIO_Red, True)
 
     # set Trigger after 0.01ms to LOW
     time.sleep(0.00001)
@@ -118,8 +121,8 @@ def distance():
 def send_metrics(data):
     print('sending data to api: {}'.format(data))
     
-    # payload = {"state":{"reported":data}}
-    # bath_shadow.update_shadow_data(json.dumps(payload), shadow_update_callback)
+    payload = {"state":{"reported":data}}
+    bath_shadow.update_shadow_data(json.dumps(payload), shadow_update_callback)
 
 
 def check_readings(readings, last):
@@ -134,20 +137,23 @@ def check_readings(readings, last):
 
 
 if __name__ == '__main__':
-    # Setup
+    # Setup    
     bath_shadow = DeviceShadowHandler(name='SmartBath',
                                       root_ca_path=conf['bath-certs']['root-ca-path'],
                                       private_key_path=conf['bath-certs']['private-key-path'],
                                       cert_path=conf['bath-certs']['cert-path'])
     bath_shadow.connect()
     bath_shadow.delete_shadow_data(shadow_delete_callback)
-    bath_shadow.add_mqtt_subscription('BathMsg/stop', test_receive_callback)
-    interrupted = False
+    bath_shadow.add_mqtt_subscription('BathMsg/stop', stop_callback)
+    bath_shadow.add_mqtt_subscription('BathMsg/tap-state', tap_state_callback)
+
+    # Debugging
+    GPIO.output(GPIO_Blue, True)
 
     try:
         delay = 1
         
-        while not interrupted:
+        while not state['interrupted']:
             readings = []
             
             for i in range(0, 4):
@@ -162,6 +168,9 @@ if __name__ == '__main__':
             if state['taps']['duration'] <= 0:
                 state['taps']['hot'] = False
                 state['taps']['cold'] = False
+                GPIO.output(GPIO_Blue, False)
+                GPIO.output(GPIO_Red, False)
+                bath_shadow.send_mqtt_msg('BathMsg/request-tap-state', '{}')
                 
             
             

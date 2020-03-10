@@ -50,8 +50,8 @@ class DeviceShadowHandler(object):
         else:
             raise Exception('No connection setup to mqtt endpoint')
         
-    def send_mqtt_msg(self, event, data, callback, qos=0):
+    def send_mqtt_msg(self, topic, data, qos=0):
         if self.mqtt_client:
-            pass
+            return self.mqtt_client.publish(topic, data, qos)
         else:
             raise Exception('No connection setup to mqtt endpoint')
