@@ -1,33 +1,15 @@
 import configparser
 import json
-import logging
-
-import RPi.GPIO as GPIO
 import time
 
 from datetime import datetime
-
-#GPIO Mode (BOARD / BCM)
 from aws.aws_iot import DeviceShadowHandler
-
-GPIO.setmode(GPIO.BCM)
-
-#set GPIO Pins
-GPIO_TRIGGER = 22
-GPIO_ECHO = 27
-GPIO_Blue = 23
-GPIO_Red = 24
-
-#set GPIO direction (IN / OUT)
-GPIO.setup(GPIO_TRIGGER, GPIO.OUT)
-GPIO.setup(GPIO_ECHO, GPIO.IN)
-GPIO.setup(GPIO_Blue,GPIO.OUT)             # initialize digital pin40 as an output.
-GPIO.setup(GPIO_Red,GPIO.OUT)             # initialize digital pin40 as an output.
 
 conf = configparser.ConfigParser()
 conf.read('config.cfg')
 
-#Setup global state
+# Setup global state
+debug = True
 last_data_sent = 0
 readings = []
 state = {
@@ -55,7 +37,6 @@ def shadow_update_callback(payload, responseStatus, token):
         print("Update request " + token + " rejected!")
 
 
-# Function called when a shadow is deleted
 def shadow_delete_callback(payload, responseStatus, token):
     if responseStatus == "timeout":
         print("Delete request " + token + " time out!")
@@ -70,58 +51,23 @@ def shadow_delete_callback(payload, responseStatus, token):
 
 
 def stop_callback(client, userdata, message):
-    response = {"state": {"reported": {"interrupted": True}}}
+    response = {"state": {"interrupted": True}}
     global state
     state['interrupted'] = True
     bath_shadow.update_shadow_data(json.dumps(response), shadow_update_callback)
+
 
 def tap_state_callback(client, userdata, message):
     # TODO: Look in the message to get how the state needs to be changed
     global state
     state['taps']['duration'] = 10
-    GPIO.output(GPIO_Red, True)
-
-def setup_logging():
-    logger = logging.getLogger("AWSIoTPythonSDK.core")
-    logger.setLevel(logging.DEBUG)
-    streamHandler = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    streamHandler.setFormatter(formatter)
-    logger.addHandler(streamHandler)
-
-
-def distance():
-    # set Trigger to HIGH
-    GPIO.output(GPIO_TRIGGER, True)
-
-    # set Trigger after 0.01ms to LOW
-    time.sleep(0.00001)
-    GPIO.output(GPIO_TRIGGER, False)
-
-    StartTime = time.time()
-    StopTime = time.time()
-
-    # save StartTime
-    while GPIO.input(GPIO_ECHO) == 0:
-        StartTime = time.time()
-
-    # save time of arrival
-    while GPIO.input(GPIO_ECHO) == 1:
-        StopTime = time.time()
-
-    # time difference between start and arrival
-    TimeElapsed = StopTime - StartTime
-    # multiply with the sonic speed (34300 cm/s)
-    # and divide by 2, because there and back
-    distance = (TimeElapsed * 34300) / 2
-
-    return distance
+    data_reader.hot_tap_on()
 
 
 def send_metrics(data):
-    print('sending data to api: {}'.format(data))
-    
-    payload = {"state":{"reported":data}}
+    print('Sending data to aws: {}'.format(data))
+    payload = {"state": data}
+
     bath_shadow.update_shadow_data(json.dumps(payload), shadow_update_callback)
 
 
@@ -147,8 +93,15 @@ if __name__ == '__main__':
     bath_shadow.add_mqtt_subscription('BathMsg/stop', stop_callback)
     bath_shadow.add_mqtt_subscription('BathMsg/tap-state', tap_state_callback)
 
-    # Debugging
-    GPIO.output(GPIO_Blue, True)
+    if debug:
+        from data_readers.fake_reader import FakeDataReader
+        data_reader = FakeDataReader()
+    else:
+        from data_readers.pi_reader import PiDataReader
+        data_reader = PiDataReader()
+
+    # TODO: Remove later, was set to check that the LED's work correctly
+    data_reader.cold_tap_on()
 
     try:
         delay = 1
@@ -157,29 +110,30 @@ if __name__ == '__main__':
             readings = []
             
             for i in range(0, 4):
-                dist = distance()
+                dist = data_reader.read_water_height()
                 readings.append(dist)
-                print("Measured Distance = %.1f cm" % dist)
+                print("Measured water distance = %.1f cm" % dist)
                 time.sleep(delay / 5)
 
             last_data_sent = check_readings(readings, last_data_sent)
             
             state['taps']['duration'] -= 1
             if state['taps']['duration'] <= 0:
+                # TODO: Maybe the data reader should access the state object itself?
                 state['taps']['hot'] = False
                 state['taps']['cold'] = False
-                GPIO.output(GPIO_Blue, False)
-                GPIO.output(GPIO_Red, False)
-                bath_shadow.send_mqtt_msg('BathMsg/request-tap-state', '{}')
-                
-            
-            
-            
+                data_reader.cold_tap_off()
+                data_reader.hot_tap_off()
+                bath_shadow.send_mqtt_msg('BathMsg/request-tap-state', json.dumps({'shadow': 'SmartBath'}))
+                # TODO: It looks like its possible to get shadow data of the current thing that triggered the rule
+                #       https://docs.aws.amazon.com/iot/latest/developerguide/iot-sql-functions.html#iot-sql-function-get-thing-shadow
+                #       If during the setup the users pref temp is set in the device shadow, it can be accessed
+                #       It is also possible to invoke a lambda, so really anything is possible
+                #       Maybe make this call blocking, and wait to read the response?
 
     # Reset by pressing CTRL + C
     except KeyboardInterrupt:
-        pass
+        print("Manual interrupt")
     finally:
-        print("Manual stop")
-        GPIO.cleanup()
-        
+        print("Readings stopped")
+        data_reader.reset()
