@@ -1,3 +1,4 @@
+import ast
 import configparser
 import json
 import time
@@ -51,22 +52,32 @@ def shadow_delete_callback(payload, responseStatus, token):
 
 
 def stop_callback(client, userdata, message):
-    response = {"state": {"interrupted": True}}
+    response = {"state": {"reported":  {"interrupted": True}}}
     global state
     state['interrupted'] = True
     bath_shadow.update_shadow_data(json.dumps(response), shadow_update_callback)
 
 
 def tap_state_callback(client, userdata, message):
-    # TODO: Look in the message to get how the state needs to be changed
     global state
-    state['taps']['duration'] = 10
-    data_reader.hot_tap_on()
+
+    # parse response stream as a dict
+    response = ast.literal_eval(message.payload.decode("UTF-8"))
+
+    print('Received response for changing tap state: {}'.format(response))
+
+    if response['Tap'] == 'Cold':
+        data_reader.cold_tap_on()
+    elif response['Tap'] == 'Hot':
+        data_reader.hot_tap_on()
+
+    state['taps']['duration'] = response['Duration']
+    print('Waiting {} seconds for next check'.format(response['Duration']))
 
 
 def send_metrics(data):
     print('Sending data to aws: {}'.format(data))
-    payload = {"state": data}
+    payload = {"state": {"reported": data}}
 
     bath_shadow.update_shadow_data(json.dumps(payload), shadow_update_callback)
 
@@ -76,7 +87,7 @@ def check_readings(readings, last):
     avg_reading = sum(readings) / len(readings) 
     
     if abs(avg_reading - last) > 30:
-        send_metrics({'distance': dist, 'timestamp': str(datetime.utcnow())})
+        send_metrics({'distance': dist})
         return avg_reading
             
     return last
@@ -119,17 +130,11 @@ if __name__ == '__main__':
             
             state['taps']['duration'] -= 1
             if state['taps']['duration'] <= 0:
-                # TODO: Maybe the data reader should access the state object itself?
                 state['taps']['hot'] = False
                 state['taps']['cold'] = False
                 data_reader.cold_tap_off()
                 data_reader.hot_tap_off()
                 bath_shadow.send_mqtt_msg('BathMsg/request-tap-state', json.dumps({'shadow': 'SmartBath'}))
-                # TODO: It looks like its possible to get shadow data of the current thing that triggered the rule
-                #       https://docs.aws.amazon.com/iot/latest/developerguide/iot-sql-functions.html#iot-sql-function-get-thing-shadow
-                #       If during the setup the users pref temp is set in the device shadow, it can be accessed
-                #       It is also possible to invoke a lambda, so really anything is possible
-                #       Maybe make this call blocking, and wait to read the response?
 
     # Reset by pressing CTRL + C
     except KeyboardInterrupt:
